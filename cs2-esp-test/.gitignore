@@ -1,0 +1,25 @@
+# Build outputs (keep out of Git)
+/bin/
+/build/
+*.exe
+*.obj
+*.pdb
+*.idb
+*.ilk
+*.exp
+*.log
+
+# IDE / editor
+.vs/
+.idea/
+*.csproj
+*.vcxproj
+*.vcxproj.filters
+*.user
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Local syntax-check stub (not part of the deliverable; real Windows headers are used on target)
+/_stub/
