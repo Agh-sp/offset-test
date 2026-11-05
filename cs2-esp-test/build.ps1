@@ -25,7 +25,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
+$scriptDir = $PSScriptRoot
 $srcDir    = Join-Path $scriptDir "src"
 $outDir    = Join-Path $scriptDir $OutDir
 
