@@ -25,7 +25,12 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$scriptDir = $PSScriptRoot
+# $PSScriptRoot can be null in some PowerShell hosts; fall back to $PSCommandPath
+if ($PSScriptRoot) {
+    $scriptDir = $PSScriptRoot
+} else {
+    $scriptDir = Split-Path -Parent $PSCommandPath
+}
 $srcDir    = Join-Path $scriptDir "src"
 $outDir    = Join-Path $scriptDir $OutDir
 
