@@ -1,0 +1,11 @@
+{
+  "allow_partial": false,
+  "analysis_complete": false,
+  "issues": [
+    {
+      "message": "omitted factory 7ffe73a2d3f0: unsupported factory instructions at 0x7FFE73A2D3F0 (first opcode 0x48)",
+      "stage": "interfaces.factory",
+      "subject": "soundsystem.dll:VMixEditTool001"
+    }
+  ]
+}
