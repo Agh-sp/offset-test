@@ -1,4 +1,4 @@
-// esp_display.cpp - Phase 2: experimental read-only ESP display (top-down radar) + Insert menu.
+// esp_display.cpp - Phase 2: experimental read-only ESP display (top-down radar) + beautiful INSERT menu.
 // Reads cs2.exe memory (no injection, no writes, no hooks) and renders player
 // positions to its own window.
 //
@@ -28,6 +28,12 @@ constexpr float MAX_SCALE = 8.0f;
 constexpr float MIN_EXTENT = 500.f;
 }
 
+struct MenuItem {
+    const char* label;
+    bool* value;      // nullptr = submenu / action
+    int teamValue;    // used for team filter (0=all,2=CT,3=T)
+};
+
 struct App {
     MemReader mem;
     uintptr_t clientBase = 0;
@@ -43,6 +49,7 @@ struct App {
     // Menu state (toggled with INSERT)
     bool menuOpen = false;
     int menuSel = 0;
+
     bool espEnabled = true;
     bool showBoxes = true;
     bool showHealthBar = true;
@@ -134,11 +141,11 @@ static COLORREF teamColor(int team, bool dormant) {
 
 static const char* teamShort(int team) {
     switch (team) {
-        case 3: return "T";
+        case 3: return "TERRORIST";
         case 2: return "CT";
-        case 1: return "SPEC";
-        case 0: return "UNA";
-        default: return "?";
+        case 1: return "SPECTATOR";
+        case 0: return "UNASSIGNED";
+        default: return "UNKNOWN";
     }
 }
 
@@ -170,53 +177,134 @@ static void drawText(HDC hdc, int x, int y, const char* text, COLORREF color) {
     TextOutA(hdc, x, y, text, static_cast<int>(strlen(text)));
 }
 
+static void drawCheckbox(HDC hdc, int x, int y, bool checked, COLORREF color) {
+    int size = 16;
+    // Box border
+    HPEN pen = CreatePen(PS_SOLID, 2, checked ? color : RGB(120, 120, 120));
+    HBRUSH brush = CreateSolidBrush(checked ? color : RGB(25, 25, 25));
+    HPEN oldPen = (HPEN)SelectObject(hdc, pen);
+    HBRUSH oldBrush = (HBRUSH)SelectObject(hdc, brush);
+    Rectangle(hdc, x, y, x + size, y + size);
+    SelectObject(hdc, oldPen);
+    SelectObject(hdc, oldBrush);
+    DeleteObject(pen);
+    DeleteObject(brush);
+
+    if (checked) {
+        // Draw check mark
+        HPEN cpen = CreatePen(PS_SOLID, 3, RGB(255, 255, 255));
+        HPEN old = (HPEN)SelectObject(hdc, cpen);
+        MoveToEx(hdc, x + 4, y + size / 2, nullptr);
+        LineTo(hdc, x + size / 2 - 2, y + size - 4);
+        LineTo(hdc, x + size - 4, y + 4);
+        SelectObject(hdc, old);
+        DeleteObject(cpen);
+    }
+}
+
 static void renderMenu(HDC hdc, App& app, int w, int h) {
-    int panelW = 340, panelH = 200;
+    int panelW = 420, panelH = 300;
     int panelX = (w - panelW) / 2;
     int panelY = (h - panelH) / 2;
 
-    // Background panel
-    fillRect(hdc, panelX, panelY, panelW, panelH, RGB(20, 20, 20));
+    // Semi-transparent dark background (simulated with solid dark + border)
+    fillRect(hdc, panelX, panelY, panelW, panelH, RGB(18, 18, 22));
 
-    // Border
-    HPEN pen = CreatePen(PS_SOLID, 2, RGB(255, 255, 255));
+    // Glow border
+    HPEN pen = CreatePen(PS_SOLID, 3, app.espEnabled ? RGB(0, 255, 120) : RGB(255, 60, 60));
     HPEN oldPen = (HPEN)SelectObject(hdc, pen);
     HBRUSH oldBrush = (HBRUSH)SelectObject(hdc, GetStockObject(NULL_BRUSH));
-    Rectangle(hdc, panelX, panelY, panelX + panelW, panelY + panelH);
+    RoundRect(hdc, panelX, panelY, panelX + panelW, panelY + panelH, 12, 12);
     SelectObject(hdc, oldPen);
     SelectObject(hdc, oldBrush);
     DeleteObject(pen);
 
     // Title
     SetBkMode(hdc, TRANSPARENT);
-    SetTextColor(hdc, RGB(255, 255, 0));
-    TextOutA(hdc, panelX + 14, panelY + 10, "CS2 ESP MENU (INSERT)", 21);
+    SetTextColor(hdc, RGB(255, 255, 255));
+    HFONT titleFont = CreateFontA(28, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY,
+        DEFAULT_PITCH | FF_SWISS, "Segoe UI");
+    HFONT oldFont = (HFONT)SelectObject(hdc, titleFont);
+    TextOutA(hdc, panelX + 30, panelY + 18, "CS2 ESP MENU", 12);
+    SelectObject(hdc, oldFont);
+    DeleteObject(titleFont);
 
-    // Dynamic labels
-    char labels[MENU_COUNT][64];
-    snprintf(labels[0], sizeof(labels[0]), "ESP: %s", app.espEnabled ? "ON" : "OFF");
-    snprintf(labels[1], sizeof(labels[1]), "Boxes: %s", app.showBoxes ? "ON" : "OFF");
-    snprintf(labels[2], sizeof(labels[2]), "Health: %s", app.showHealthBar ? "ON" : "OFF");
-    const char* teamStr = (app.teamFilter == 0) ? "All"
-                        : (app.teamFilter == 2) ? "CT" : "TERRORIST";
-    snprintf(labels[3], sizeof(labels[3]), "Team Filter: %s", teamStr);
-    snprintf(labels[4], sizeof(labels[4]), "Close (Insert)");
+    // Subtitle
+    SetTextColor(hdc, RGB(160, 160, 170));
+    HFONT subFont = CreateFontA(16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY,
+        DEFAULT_PITCH | FF_SWISS, "Segoe UI");
+    oldFont = (HFONT)SelectObject(hdc, subFont);
+    const char* sub = app.espEnabled ? "ESP is ACTIVE" : "ESP is DISABLED";
+    TextOutA(hdc, panelX + 30, panelY + 52, sub, static_cast<int>(strlen(sub)));
+    SelectObject(hdc, oldFont);
+    DeleteObject(subFont);
+
+    // Menu items
+    const char* labels[MENU_COUNT] = {
+        "ESP Master Toggle",
+        "Show Boxes",
+        "Show Health Bar",
+        "Team Filter",
+        "Close Menu"
+    };
+    const char* values[MENU_COUNT] = {
+        app.espEnabled ? "[ ON ]" : "[ OFF ]",
+        app.showBoxes ? "[ ON ]" : "[ OFF ]",
+        app.showHealthBar ? "[ ON ]" : "[ OFF ]",
+        (app.teamFilter == 0) ? "All" : (app.teamFilter == 2 ? "CT" : "TERRORIST"),
+        "Insert"
+    };
 
     for (int i = 0; i < MENU_COUNT; ++i) {
-        int y = panelY + 42 + i * 26;
-        if (i == app.menuSel) {
-            RECT sel{ panelX + 12, y - 4, panelX + panelW - 12, y + 20 };
+        int y = panelY + 100 + i * 42;
+        bool selected = (i == app.menuSel);
+
+        // Selection highlight
+        if (selected) {
+            RECT sel{ panelX + 20, y - 6, panelX + panelW - 20, y + 32 };
             FillRect(hdc, &sel, (HBRUSH)GetStockObject(GRAY_BRUSH));
-            SetTextColor(hdc, RGB(0, 0, 0));
-        } else {
-            SetTextColor(hdc, RGB(220, 220, 220));
         }
-        TextOutA(hdc, panelX + 22, y, labels[i], static_cast<int>(strlen(labels[i])));
+
+        // Checkbox glyph
+        bool isToggle = (i == 0 || i == 1 || i == 2);
+        if (isToggle) {
+            bool checked = false;
+            if (i == 0) checked = app.espEnabled;
+            else if (i == 1) checked = app.showBoxes;
+            else if (i == 2) checked = app.showHealthBar;
+            COLORREF cc = app.espEnabled ? RGB(0, 255, 120) : RGB(255, 60, 60);
+            drawCheckbox(hdc, panelX + 30, y, checked, cc);
+        }
+
+        // Label text
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, selected ? RGB(255, 255, 0) : RGB(230, 230, 230));
+        HFONT itemFont = CreateFontA(20, 0, 0, 0, selected ? FW_BOLD : FW_NORMAL, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY,
+            DEFAULT_PITCH | FF_SWISS, "Segoe UI");
+        oldFont = (HFONT)SelectObject(hdc, itemFont);
+        int textX = isToggle ? panelX + 60 : panelX + 30;
+        TextOutA(hdc, textX, y, labels[i], static_cast<int>(strlen(labels[i])));
+        SelectObject(hdc, oldFont);
+        DeleteObject(itemFont);
+
+        // Value text (right aligned)
+        SetTextColor(hdc, selected ? RGB(255, 215, 0) : RGB(150, 150, 160));
+        oldFont = (HFONT)SelectObject(hdc, subFont);
+        int vx = panelX + panelW - 40 - static_cast<int>(strlen(values[i])) * 8;
+        TextOutA(hdc, vx, y, values[i], static_cast<int>(strlen(values[i])));
+        SelectObject(hdc, oldFont);
     }
 
-    SetTextColor(hdc, RGB(150, 150, 150));
-    TextOutA(hdc, panelX + 14, panelY + panelH - 26,
-             "Up/Down: navigate  Enter/Space: toggle", 42);
+    // Controls hint
+    SetTextColor(hdc, RGB(120, 120, 130));
+    oldFont = (HFONT)SelectObject(hdc, subFont);
+    const char* hint = "Up/Down: Navigate   Enter/Space: Toggle   Insert: Close";
+    TextOutA(hdc, panelX + 30, panelY + panelH - 30, hint, static_cast<int>(strlen(hint)));
+    SelectObject(hdc, oldFont);
+    DeleteObject(subFont);
 }
 
 void render(App& app, HDC hdc, int w, int h) {
@@ -234,7 +322,7 @@ void render(App& app, HDC hdc, int w, int h) {
         ents = readEntities(app.mem, app.probe, app.clientBase, app.scanLimit);
     }
 
-    // Status line (always visible)
+    // Status line (always visible, top-left)
     char status[256];
     std::snprintf(status, sizeof(status),
                   "cs2 ESP (read-only) | scale=%.2f u/px | entities=%d | %s",
@@ -364,7 +452,6 @@ int main() {
     app.clientBase = *client;
 
     // Probe entity list layout once at startup.
-    int valid = 0;
     auto probed = probeEntityList(app.mem, app.clientBase, app.scanLimit);
     if (probed) {
         app.probe = *probed;
