@@ -103,8 +103,18 @@ Only after the diagnostic reports the data you expect:
 ```
 
 This opens a window with a top-down radar of player positions (read-only,
-memory-based). Keys: `ESC` = exit, `+` / `-` = zoom, `A` = toggle auto-zoom,
-`R` = recenter.
+memory-based).
+
+**Keys:**
+- `INSERT` = open/close the settings menu (in menu: Up/Down navigate,
+  Enter/Space toggle, Insert closes)
+- `ESC` = exit (if the menu is open, it closes the menu first)
+- `+` / `-` = manual zoom
+- `A` = toggle auto-zoom
+- `R` = recenter and enable auto-zoom
+
+From the Insert menu you can enable/disable ESP, boxes, health bars, and set
+the team filter (All / CT / Terrorist).
 
 ### Rebuild after changes
 

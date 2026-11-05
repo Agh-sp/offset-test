@@ -1,16 +1,13 @@
-// esp_display.cpp - Phase 2: experimental read-only ESP display (top-down radar).
+// esp_display.cpp - Phase 2: experimental read-only ESP display (top-down radar) + Insert menu.
 // Reads cs2.exe memory (no injection, no writes, no hooks) and renders player
-// positions to its own window — positions are visible even behind obstacles
-// because they come from memory, not from the game image.
+// positions to its own window.
 //
 // Intended for OFFLINE / PRACTICE use only. READ-ONLY.
 //
-// Build AFTER the diagnostic passes:
-//   .\build.ps1 -Target esp
-// Run:
-//   .\cs2-esp-display.exe
-//
-// Keys: ESC = exit | + / - = zoom | A = toggle auto-zoom | R = recenter
+// Keys:
+//   INSERT = toggle menu
+//   In menu: Up/Down = navigate, Enter/Space = toggle, Insert = close
+//   Outside menu: ESC = exit | + / - = zoom | A = toggle auto-zoom | R = recenter
 
 #include <windows.h>
 #include <cmath>
@@ -26,9 +23,9 @@
 using namespace cs2esp;
 
 namespace {
-constexpr float MIN_SCALE = 0.4f;   // units per pixel
+constexpr float MIN_SCALE = 0.4f;
 constexpr float MAX_SCALE = 8.0f;
-constexpr float MIN_EXTENT = 500.f; // keep radar from collapsing when alone
+constexpr float MIN_EXTENT = 500.f;
 }
 
 struct App {
@@ -42,8 +39,17 @@ struct App {
     int winW = 900, winH = 700;
     float scale = 1.5f;
     bool autoScale = true;
-    std::string status;
+
+    // Menu state (toggled with INSERT)
+    bool menuOpen = false;
+    int menuSel = 0;
+    bool espEnabled = true;
+    bool showBoxes = true;
+    bool showHealthBar = true;
+    int teamFilter = 0; // 0 = all, 2 = CT, 3 = TERRORIST
 };
+
+constexpr int MENU_COUNT = 5;
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
@@ -63,11 +69,47 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             auto* app = reinterpret_cast<App*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
             if (!app) return 0;
             switch (static_cast<int>(wParam)) {
-                case VK_ESCAPE: PostQuitMessage(0); break;
-                case VK_ADD: case VK_OEM_PLUS: app->autoScale = false; app->scale *= 1.4f; break;
-                case VK_SUBTRACT: case VK_OEM_MINUS: app->autoScale = false; app->scale /= 1.4f; break;
-                case 'A': case 'a': app->autoScale = !app->autoScale; break;
-                case 'R': case 'r': app->autoScale = true; break;
+                case VK_INSERT:
+                    app->menuOpen = !app->menuOpen;
+                    break;
+                case VK_ESCAPE:
+                    if (!app->menuOpen) PostQuitMessage(0);
+                    else app->menuOpen = false;
+                    break;
+                case VK_ADD: case VK_OEM_PLUS:
+                    if (!app->menuOpen) { app->autoScale = false; app->scale *= 1.4f; }
+                    break;
+                case VK_SUBTRACT: case VK_OEM_MINUS:
+                    if (!app->menuOpen) { app->autoScale = false; app->scale /= 1.4f; }
+                    break;
+                case 'A': case 'a':
+                    if (!app->menuOpen) app->autoScale = !app->autoScale;
+                    break;
+                case 'R': case 'r':
+                    if (!app->menuOpen) app->autoScale = true;
+                    break;
+                case VK_UP:
+                    if (app->menuOpen) { app->menuSel = (app->menuSel - 1 + MENU_COUNT) % MENU_COUNT; }
+                    break;
+                case VK_DOWN:
+                    if (app->menuOpen) { app->menuSel = (app->menuSel + 1) % MENU_COUNT; }
+                    break;
+                case VK_RETURN: case VK_SPACE:
+                    if (app->menuOpen) {
+                        switch (app->menuSel) {
+                            case 0: app->espEnabled = !app->espEnabled; break;
+                            case 1: app->showBoxes = !app->showBoxes; break;
+                            case 2: app->showHealthBar = !app->showHealthBar; break;
+                            case 3: {
+                                int t = app->teamFilter;
+                                if (t == 0) t = 2; else if (t == 2) t = 3; else if (t == 3) t = 0;
+                                app->teamFilter = t;
+                                break;
+                            }
+                            case 4: app->menuOpen = false; break;
+                        }
+                    }
+                    break;
             }
             return 0;
         }
@@ -78,10 +120,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 static COLORREF teamColor(int team, bool dormant) {
     COLORREF c;
     switch (team) {
-        case 3: c = RGB(255, 70, 70);   break; // TERRORIST  -> red
-        case 2: c = RGB(70, 130, 255);  break; // CT         -> blue
-        case 1: c = RGB(190, 190, 190); break; // spectator  -> gray
-        case 0: c = RGB(240, 240, 240); break; // unassigned -> white
+        case 3: c = RGB(255, 70, 70);   break; // TERRORIST -> red
+        case 2: c = RGB(70, 130, 255);  break; // CT        -> blue
+        case 1: c = RGB(190, 190, 190); break; // spectator -> gray
+        case 0: c = RGB(240, 240, 240); break; // unassigned-> white
         default: c = RGB(200, 200, 200);
     }
     if (dormant) {
@@ -113,10 +155,68 @@ static void fillCircle(HDC hdc, int cx, int cy, int r, COLORREF color) {
     DeleteObject(brush);
 }
 
+static void fillRect(HDC hdc, int x, int y, int w, int h, COLORREF color) {
+    RECT rc{ x, y, x + w, y + h };
+    HBRUSH brush = CreateSolidBrush(color);
+    HBRUSH oldBrush = (HBRUSH)SelectObject(hdc, brush);
+    FillRect(hdc, &rc, brush);
+    SelectObject(hdc, oldBrush);
+    DeleteObject(brush);
+}
+
 static void drawText(HDC hdc, int x, int y, const char* text, COLORREF color) {
     SetBkMode(hdc, TRANSPARENT);
     SetTextColor(hdc, color);
     TextOutA(hdc, x, y, text, static_cast<int>(strlen(text)));
+}
+
+static void renderMenu(HDC hdc, App& app, int w, int h) {
+    int panelW = 340, panelH = 200;
+    int panelX = (w - panelW) / 2;
+    int panelY = (h - panelH) / 2;
+
+    // Background panel
+    fillRect(hdc, panelX, panelY, panelW, panelH, RGB(20, 20, 20));
+
+    // Border
+    HPEN pen = CreatePen(PS_SOLID, 2, RGB(255, 255, 255));
+    HPEN oldPen = (HPEN)SelectObject(hdc, pen);
+    HBRUSH oldBrush = (HBRUSH)SelectObject(hdc, GetStockObject(NULL_BRUSH));
+    Rectangle(hdc, panelX, panelY, panelX + panelW, panelY + panelH);
+    SelectObject(hdc, oldPen);
+    SelectObject(hdc, oldBrush);
+    DeleteObject(pen);
+
+    // Title
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, RGB(255, 255, 0));
+    TextOutA(hdc, panelX + 14, panelY + 10, "CS2 ESP MENU (INSERT)", 21);
+
+    // Dynamic labels
+    char labels[MENU_COUNT][64];
+    snprintf(labels[0], sizeof(labels[0]), "ESP: %s", app.espEnabled ? "ON" : "OFF");
+    snprintf(labels[1], sizeof(labels[1]), "Boxes: %s", app.showBoxes ? "ON" : "OFF");
+    snprintf(labels[2], sizeof(labels[2]), "Health: %s", app.showHealthBar ? "ON" : "OFF");
+    const char* teamStr = (app.teamFilter == 0) ? "All"
+                        : (app.teamFilter == 2) ? "CT" : "TERRORIST";
+    snprintf(labels[3], sizeof(labels[3]), "Team Filter: %s", teamStr);
+    snprintf(labels[4], sizeof(labels[4]), "Close (Insert)");
+
+    for (int i = 0; i < MENU_COUNT; ++i) {
+        int y = panelY + 42 + i * 26;
+        if (i == app.menuSel) {
+            RECT sel{ panelX + 12, y - 4, panelX + panelW - 12, y + 20 };
+            FillRect(hdc, &sel, (HBRUSH)GetStockObject(GRAY_BRUSH));
+            SetTextColor(hdc, RGB(0, 0, 0));
+        } else {
+            SetTextColor(hdc, RGB(220, 220, 220));
+        }
+        TextOutA(hdc, panelX + 22, y, labels[i], static_cast<int>(strlen(labels[i])));
+    }
+
+    SetTextColor(hdc, RGB(150, 150, 150));
+    TextOutA(hdc, panelX + 14, panelY + panelH - 26,
+             "Up/Down: navigate  Enter/Space: toggle", 42);
 }
 
 void render(App& app, HDC hdc, int w, int h) {
@@ -130,8 +230,35 @@ void render(App& app, HDC hdc, int w, int h) {
 
     // Read entities using the probed layout.
     std::vector<Entity> ents;
-    if (app.probeOk) {
+    if (app.probeOk && app.espEnabled) {
         ents = readEntities(app.mem, app.probe, app.clientBase, app.scanLimit);
+    }
+
+    // Status line (always visible)
+    char status[256];
+    std::snprintf(status, sizeof(status),
+                  "cs2 ESP (read-only) | scale=%.2f u/px | entities=%d | %s",
+                  app.scale, static_cast<int>(ents.size()),
+                  app.autoScale ? "auto-zoom ON" : "manual zoom");
+    drawText(hdc, 10, 10, status, RGB(200, 200, 200));
+    if (!local) {
+        drawText(hdc, 10, 30, "waiting for local player ...", RGB(200, 60, 60));
+    }
+
+    // Menu overlay (INSERT)
+    if (app.menuOpen) {
+        renderMenu(hdc, app, w, h);
+        return; // menu blocks radar interaction while open
+    }
+
+    // Range ring (500 units) around local player.
+    if (local) {
+        int rr = static_cast<int>(500.f * app.scale);
+        HPEN pen = CreatePen(PS_DOT, 1, RGB(60, 60, 60));
+        HPEN old = (HPEN)SelectObject(hdc, pen);
+        Ellipse(hdc, cx - rr, cy - rr, cx + rr, cy + rr);
+        SelectObject(hdc, old);
+        DeleteObject(pen);
     }
 
     // Auto-zoom: fit the local player + all entities with padding.
@@ -151,31 +278,11 @@ void render(App& app, HDC hdc, int w, int h) {
         }
     }
 
-    // Status line.
-    char status[256];
-    std::snprintf(status, sizeof(status),
-                  "cs2 ESP (read-only) | scale=%.2f u/px | entities=%d | %s",
-                  app.scale, static_cast<int>(ents.size()),
-                  app.autoScale ? "auto-zoom ON" : "manual zoom");
-    drawText(hdc, 10, 10, status, RGB(200, 200, 200));
-    if (!local) {
-        drawText(hdc, 10, 30, "waiting for local player ...", RGB(200, 60, 60));
-    }
-
-    // Range ring (500 units) around local player.
-    if (local) {
-        int rr = static_cast<int>(500.f * app.scale);
-        HPEN pen = CreatePen(PS_DOT, 1, RGB(60, 60, 60));
-        HPEN old = (HPEN)SelectObject(hdc, pen);
-        Ellipse(hdc, cx - rr, cy - rr, cx + rr, cy + rr);
-        SelectObject(hdc, old);
-        DeleteObject(pen);
-    }
-
     // Other players.
     if (local) {
         for (const auto& e : ents) {
-            if (!local.has_value()) break;
+            if (app.teamFilter != 0 && e.team != app.teamFilter) continue;
+
             float dx = e.origin.x - local->origin.x;
             float dy = e.origin.y - local->origin.y;
             int sx = static_cast<int>(cx + dx * app.scale);
@@ -183,15 +290,29 @@ void render(App& app, HDC hdc, int w, int h) {
             if (sx < -40 || sx > w + 40 || sy < -40 || sy > h + 40) continue;
 
             COLORREF col = teamColor(e.team, e.dormant);
-            int r = 6;
-            if (e.team == local->team && e.team != 0) r = 5; // teammates slightly smaller
-            fillCircle(hdc, sx, sy, r, col);
+
+            if (app.showBoxes) {
+                int r = 6;
+                if (e.team == local->team && e.team != 0) r = 5; // teammates slightly smaller
+                fillCircle(hdc, sx, sy, r, col);
+            }
+
+            if (app.showHealthBar) {
+                int barW = 22, barH = 5;
+                int hpPct = e.health;
+                if (hpPct < 0) hpPct = 0;
+                if (hpPct > 100) hpPct = 100;
+                int bx = sx - barW / 2;
+                int by = sy - 12;
+                fillRect(hdc, bx, by, barW, barH, RGB(60, 0, 0));        // bg
+                fillRect(hdc, bx, by, (barW * hpPct) / 100, barH, col); // fill
+            }
 
             char label[64];
             std::snprintf(label, sizeof(label), "%s %d%s",
                           teamShort(e.team), e.health,
                           e.dormant ? " (dormant)" : "");
-            drawText(hdc, sx + r + 2, sy - 7, label, col);
+            drawText(hdc, sx + 8, sy - 7, label, col);
         }
 
         // Local player at center + facing line.
@@ -219,7 +340,7 @@ void render(App& app, HDC hdc, int w, int h) {
 
 int main() {
     AllocConsole();
-    // Redirect C runtime streams to the new console (works with MSVC and MinGW).
+    // Redirect C runtime streams to the new console.
     freopen("CONOUT$", "w", stdout);
     freopen("CONOUT$", "w", stderr);
     setvbuf(stdout, nullptr, _IONBF, 0);
@@ -274,7 +395,7 @@ int main() {
     }
     SetWindowLongPtrW(app.hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(&app));
 
-    std::printf("Window created. Close it or press ESC to exit.\n\n");
+    std::printf("Window created. INSERT = menu | ESC = exit.\n\n");
 
     MSG msg{};
     while (app.running) {
